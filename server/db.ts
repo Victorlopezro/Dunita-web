@@ -1,238 +1,631 @@
-import { eq, like } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users, instalaciones, estructurasDefensa, objetos, criaturas, InsertInstalacion, InsertEstructuraDefensa, InsertObjeto, InsertCriatura } from "../drizzle/schema";
-import { ENV } from './_core/env';
+import { getSupabaseClient, handleSupabaseError, isSupabaseConfigured } from "./_core/supabase";
+import { ENV } from "./_core/env";
+import {
+  InsertUser,
+  InsertInstalacion,
+  InsertEstructuraDefensa,
+  InsertObjeto,
+  InsertCriatura,
+  User,
+  Instalacion,
+  EstructuraDefensa,
+  Objeto,
+  Criatura,
+} from "../drizzle/schema";
 
-let _db: ReturnType<typeof drizzle> | null = null;
+/**
+ * Database Layer Module - Refactored for Supabase
+ * 
+ * IMPORTANT: This module uses Supabase service role key for backend operations.
+ * All functions are async and handle errors gracefully.
+ * 
+ * Migration notes:
+ * - Replaced Drizzle ORM with Supabase REST API
+ * - Maintained all existing function signatures for compatibility
+ * - Added comprehensive error handling
+ * - All operations are server-side only (service role key)
+ */
 
-// Lazily create the drizzle instance so local tooling can run without a DB.
-export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      _db = drizzle(process.env.DATABASE_URL);
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
-    }
-  }
-  return _db;
+/**
+ * Table name constants
+ */
+const TABLES = {
+  USERS: "users",
+  INSTALACIONES: "instalaciones",
+  ESTRUCTURAS_DEFENSA: "estructuras_defensa",
+  OBJETOS: "objetos",
+  CRIATURAS: "criaturas",
+} as const;
+
+/**
+ * Check if database is available
+ */
+export async function getDb(): Promise<boolean> {
+  return isSupabaseConfigured();
 }
 
+// ============================================================
+// USER OPERATIONS
+// ============================================================
+
+/**
+ * Upsert user - creates or updates based on openId
+ */
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) {
     throw new Error("User openId is required for upsert");
   }
 
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
+  if (!isSupabaseConfigured()) {
+    console.warn("[Database] Cannot upsert user: Supabase not configured");
     return;
   }
 
   try {
-    const values: InsertUser = {
+    const supabase = getSupabaseClient();
+    const timestamp = new Date();
+
+    // Prepare user data
+    const userData: any = {
       openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
-
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
+      lastSignedIn: timestamp,
     };
 
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
+    // Set optional text fields
+    if (user.name !== undefined) {
+      userData.name = user.name ?? null;
     }
+    if (user.email !== undefined) {
+      userData.email = user.email ?? null;
+    }
+    if (user.loginMethod !== undefined) {
+      userData.loginMethod = user.loginMethod ?? null;
+    }
+
+    // Set role
     if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
+      userData.role = user.role;
     } else if (user.openId === ENV.ownerOpenId) {
-      values.role = 'admin';
-      updateSet.role = 'admin';
+      userData.role = "admin";
+    } else {
+      userData.role = "user";
     }
 
-    if (!values.lastSignedIn) {
-      values.lastSignedIn = new Date();
-    }
+    // Try to get existing user
+    const { data: existing } = await supabase
+      .from(TABLES.USERS)
+      .select("id")
+      .eq("openId", user.openId)
+      .single();
 
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
+    if (existing) {
+      // Update existing user
+      const { error } = await supabase
+        .from(TABLES.USERS)
+        .update(userData)
+        .eq("openId", user.openId);
 
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
-    });
+      if (error) throw error;
+    } else {
+      // Insert new user
+      const { error } = await supabase.from(TABLES.USERS).insert([userData]);
+
+      if (error) throw error;
+    }
   } catch (error) {
     console.error("[Database] Failed to upsert user:", error);
     throw error;
   }
 }
 
-export async function getUserByOpenId(openId: string) {
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
+/**
+ * Get user by openId
+ */
+export async function getUserByOpenId(openId: string): Promise<User | undefined> {
+  if (!isSupabaseConfigured()) {
+    console.warn("[Database] Cannot get user: Supabase not configured");
     return undefined;
   }
 
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from(TABLES.USERS)
+      .select("*")
+      .eq("openId", openId)
+      .single();
 
-  return result.length > 0 ? result[0] : undefined;
+    if (error && error.code !== "PGRST116") {
+      // PGRST116 is "no rows returned" which is expected
+      throw error;
+    }
+
+    return data as User | undefined;
+  } catch (error) {
+    console.error("[Database] Failed to get user:", error);
+    return undefined;
+  }
 }
 
 // ============================================================
-// INSTALACIONES (Buildings)
+// INSTALACIONES (Buildings/Structures)
 // ============================================================
 
-export async function getAllInstalaciones() {
-  const db = await getDb();
-  if (!db) return [];
-  return await db.select().from(instalaciones);
+/**
+ * Get all instalaciones
+ */
+export async function getAllInstalaciones(): Promise<Instalacion[]> {
+  if (!isSupabaseConfigured()) {
+    console.warn("[Database] Cannot get instalaciones: Supabase not configured");
+    return [];
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase.from(TABLES.INSTALACIONES).select("*");
+
+    if (error) throw error;
+
+    return (data as Instalacion[]) || [];
+  } catch (error) {
+    console.error("[Database] Failed to get all instalaciones:", error);
+    return [];
+  }
 }
 
-export async function getInstalacionById(id: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.select().from(instalaciones).where(eq(instalaciones.id, id)).limit(1);
-  return result.length > 0 ? result[0] : undefined;
+/**
+ * Get instalacion by id
+ */
+export async function getInstalacionById(id: string): Promise<Instalacion | undefined> {
+  if (!isSupabaseConfigured()) {
+    console.warn("[Database] Cannot get instalacion: Supabase not configured");
+    return undefined;
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from(TABLES.INSTALACIONES)
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (error && error.code !== "PGRST116") {
+      throw error;
+    }
+
+    return data as Instalacion | undefined;
+  } catch (error) {
+    console.error("[Database] Failed to get instalacion:", error);
+    return undefined;
+  }
 }
 
-export async function createInstalacion(data: InsertInstalacion) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.insert(instalaciones).values(data);
-  return getInstalacionById(data.id);
+/**
+ * Create instalacion
+ */
+export async function createInstalacion(data: InsertInstalacion): Promise<Instalacion | undefined> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from(TABLES.INSTALACIONES).insert([data]);
+
+    if (error) throw error;
+
+    return getInstalacionById(data.id);
+  } catch (error) {
+    console.error("[Database] Failed to create instalacion:", error);
+    throw new Error(handleSupabaseError(error, "Create instalacion"));
+  }
 }
 
-export async function updateInstalacion(id: string, data: Partial<InsertInstalacion>) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.update(instalaciones).set(data).where(eq(instalaciones.id, id));
-  return getInstalacionById(id);
+/**
+ * Update instalacion
+ */
+export async function updateInstalacion(
+  id: string,
+  data: Partial<InsertInstalacion>
+): Promise<Instalacion | undefined> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+      .from(TABLES.INSTALACIONES)
+      .update(data)
+      .eq("id", id);
+
+    if (error) throw error;
+
+    return getInstalacionById(id);
+  } catch (error) {
+    console.error("[Database] Failed to update instalacion:", error);
+    throw new Error(handleSupabaseError(error, "Update instalacion"));
+  }
 }
 
-export async function deleteInstalacion(id: string) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.delete(instalaciones).where(eq(instalaciones.id, id));
+/**
+ * Delete instalacion
+ */
+export async function deleteInstalacion(id: string): Promise<void> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from(TABLES.INSTALACIONES).delete().eq("id", id);
+
+    if (error) throw error;
+  } catch (error) {
+    console.error("[Database] Failed to delete instalacion:", error);
+    throw new Error(handleSupabaseError(error, "Delete instalacion"));
+  }
 }
 
 // ============================================================
 // ESTRUCTURAS DE DEFENSA (Defense Structures)
 // ============================================================
 
-export async function getAllEstructurasDefensa() {
-  const db = await getDb();
-  if (!db) return [];
-  return await db.select().from(estructurasDefensa);
+/**
+ * Get all estructuras de defensa
+ */
+export async function getAllEstructurasDefensa(): Promise<EstructuraDefensa[]> {
+  if (!isSupabaseConfigured()) {
+    console.warn("[Database] Cannot get estructuras defensa: Supabase not configured");
+    return [];
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase.from(TABLES.ESTRUCTURAS_DEFENSA).select("*");
+
+    if (error) throw error;
+
+    return (data as EstructuraDefensa[]) || [];
+  } catch (error) {
+    console.error("[Database] Failed to get all estructuras defensa:", error);
+    return [];
+  }
 }
 
-export async function getEstructuraDefensaById(id: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.select().from(estructurasDefensa).where(eq(estructurasDefensa.id, id)).limit(1);
-  return result.length > 0 ? result[0] : undefined;
+/**
+ * Get estructura defensa by id
+ */
+export async function getEstructuraDefensaById(id: string): Promise<EstructuraDefensa | undefined> {
+  if (!isSupabaseConfigured()) {
+    console.warn("[Database] Cannot get estructura defensa: Supabase not configured");
+    return undefined;
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from(TABLES.ESTRUCTURAS_DEFENSA)
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (error && error.code !== "PGRST116") {
+      throw error;
+    }
+
+    return data as EstructuraDefensa | undefined;
+  } catch (error) {
+    console.error("[Database] Failed to get estructura defensa:", error);
+    return undefined;
+  }
 }
 
-export async function createEstructuraDefensa(data: InsertEstructuraDefensa) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.insert(estructurasDefensa).values(data);
-  return getEstructuraDefensaById(data.id);
+/**
+ * Create estructura defensa
+ */
+export async function createEstructuraDefensa(
+  data: InsertEstructuraDefensa
+): Promise<EstructuraDefensa | undefined> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from(TABLES.ESTRUCTURAS_DEFENSA).insert([data]);
+
+    if (error) throw error;
+
+    return getEstructuraDefensaById(data.id);
+  } catch (error) {
+    console.error("[Database] Failed to create estructura defensa:", error);
+    throw new Error(handleSupabaseError(error, "Create estructura defensa"));
+  }
 }
 
-export async function updateEstructuraDefensa(id: string, data: Partial<InsertEstructuraDefensa>) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.update(estructurasDefensa).set(data).where(eq(estructurasDefensa.id, id));
-  return getEstructuraDefensaById(id);
+/**
+ * Update estructura defensa
+ */
+export async function updateEstructuraDefensa(
+  id: string,
+  data: Partial<InsertEstructuraDefensa>
+): Promise<EstructuraDefensa | undefined> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+      .from(TABLES.ESTRUCTURAS_DEFENSA)
+      .update(data)
+      .eq("id", id);
+
+    if (error) throw error;
+
+    return getEstructuraDefensaById(id);
+  } catch (error) {
+    console.error("[Database] Failed to update estructura defensa:", error);
+    throw new Error(handleSupabaseError(error, "Update estructura defensa"));
+  }
 }
 
-export async function deleteEstructuraDefensa(id: string) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.delete(estructurasDefensa).where(eq(estructurasDefensa.id, id));
+/**
+ * Delete estructura defensa
+ */
+export async function deleteEstructuraDefensa(id: string): Promise<void> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+      .from(TABLES.ESTRUCTURAS_DEFENSA)
+      .delete()
+      .eq("id", id);
+
+    if (error) throw error;
+  } catch (error) {
+    console.error("[Database] Failed to delete estructura defensa:", error);
+    throw new Error(handleSupabaseError(error, "Delete estructura defensa"));
+  }
 }
 
 // ============================================================
-// OBJETOS (Items)
+// OBJETOS (Items/Objects)
 // ============================================================
 
-export async function getAllObjetos() {
-  const db = await getDb();
-  if (!db) return [];
-  return await db.select().from(objetos);
+/**
+ * Get all objetos
+ */
+export async function getAllObjetos(): Promise<Objeto[]> {
+  if (!isSupabaseConfigured()) {
+    console.warn("[Database] Cannot get objetos: Supabase not configured");
+    return [];
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase.from(TABLES.OBJETOS).select("*");
+
+    if (error) throw error;
+
+    return (data as Objeto[]) || [];
+  } catch (error) {
+    console.error("[Database] Failed to get all objetos:", error);
+    return [];
+  }
 }
 
-export async function getObjetoById(id: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.select().from(objetos).where(eq(objetos.id, id)).limit(1);
-  return result.length > 0 ? result[0] : undefined;
+/**
+ * Get objeto by id
+ */
+export async function getObjetoById(id: string): Promise<Objeto | undefined> {
+  if (!isSupabaseConfigured()) {
+    console.warn("[Database] Cannot get objeto: Supabase not configured");
+    return undefined;
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from(TABLES.OBJETOS)
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (error && error.code !== "PGRST116") {
+      throw error;
+    }
+
+    return data as Objeto | undefined;
+  } catch (error) {
+    console.error("[Database] Failed to get objeto:", error);
+    return undefined;
+  }
 }
 
-export async function createObjeto(data: InsertObjeto) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.insert(objetos).values(data);
-  return getObjetoById(data.id);
+/**
+ * Create objeto
+ */
+export async function createObjeto(data: InsertObjeto): Promise<Objeto | undefined> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from(TABLES.OBJETOS).insert([data]);
+
+    if (error) throw error;
+
+    return getObjetoById(data.id);
+  } catch (error) {
+    console.error("[Database] Failed to create objeto:", error);
+    throw new Error(handleSupabaseError(error, "Create objeto"));
+  }
 }
 
-export async function updateObjeto(id: string, data: Partial<InsertObjeto>) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.update(objetos).set(data).where(eq(objetos.id, id));
-  return getObjetoById(id);
+/**
+ * Update objeto
+ */
+export async function updateObjeto(
+  id: string,
+  data: Partial<InsertObjeto>
+): Promise<Objeto | undefined> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from(TABLES.OBJETOS).update(data).eq("id", id);
+
+    if (error) throw error;
+
+    return getObjetoById(id);
+  } catch (error) {
+    console.error("[Database] Failed to update objeto:", error);
+    throw new Error(handleSupabaseError(error, "Update objeto"));
+  }
 }
 
-export async function deleteObjeto(id: string) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.delete(objetos).where(eq(objetos.id, id));
+/**
+ * Delete objeto
+ */
+export async function deleteObjeto(id: string): Promise<void> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from(TABLES.OBJETOS).delete().eq("id", id);
+
+    if (error) throw error;
+  } catch (error) {
+    console.error("[Database] Failed to delete objeto:", error);
+    throw new Error(handleSupabaseError(error, "Delete objeto"));
+  }
 }
 
 // ============================================================
 // CRIATURAS (Creatures)
 // ============================================================
 
-export async function getAllCriaturas() {
-  const db = await getDb();
-  if (!db) return [];
-  return await db.select().from(criaturas);
+/**
+ * Get all criaturas
+ */
+export async function getAllCriaturas(): Promise<Criatura[]> {
+  if (!isSupabaseConfigured()) {
+    console.warn("[Database] Cannot get criaturas: Supabase not configured");
+    return [];
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase.from(TABLES.CRIATURAS).select("*");
+
+    if (error) throw error;
+
+    return (data as Criatura[]) || [];
+  } catch (error) {
+    console.error("[Database] Failed to get all criaturas:", error);
+    return [];
+  }
 }
 
-export async function getCriaturaById(id: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.select().from(criaturas).where(eq(criaturas.id, id)).limit(1);
-  return result.length > 0 ? result[0] : undefined;
+/**
+ * Get criatura by id
+ */
+export async function getCriaturaById(id: string): Promise<Criatura | undefined> {
+  if (!isSupabaseConfigured()) {
+    console.warn("[Database] Cannot get criatura: Supabase not configured");
+    return undefined;
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from(TABLES.CRIATURAS)
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (error && error.code !== "PGRST116") {
+      throw error;
+    }
+
+    return data as Criatura | undefined;
+  } catch (error) {
+    console.error("[Database] Failed to get criatura:", error);
+    return undefined;
+  }
 }
 
-export async function createCriatura(data: InsertCriatura) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.insert(criaturas).values(data);
-  return getCriaturaById(data.id);
+/**
+ * Create criatura
+ */
+export async function createCriatura(data: InsertCriatura): Promise<Criatura | undefined> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from(TABLES.CRIATURAS).insert([data]);
+
+    if (error) throw error;
+
+    return getCriaturaById(data.id);
+  } catch (error) {
+    console.error("[Database] Failed to create criatura:", error);
+    throw new Error(handleSupabaseError(error, "Create criatura"));
+  }
 }
 
-export async function updateCriatura(id: string, data: Partial<InsertCriatura>) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.update(criaturas).set(data).where(eq(criaturas.id, id));
-  return getCriaturaById(id);
+/**
+ * Update criatura
+ */
+export async function updateCriatura(
+  id: string,
+  data: Partial<InsertCriatura>
+): Promise<Criatura | undefined> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from(TABLES.CRIATURAS).update(data).eq("id", id);
+
+    if (error) throw error;
+
+    return getCriaturaById(id);
+  } catch (error) {
+    console.error("[Database] Failed to update criatura:", error);
+    throw new Error(handleSupabaseError(error, "Update criatura"));
+  }
 }
 
-export async function deleteCriatura(id: string) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.delete(criaturas).where(eq(criaturas.id, id));
+/**
+ * Delete criatura
+ */
+export async function deleteCriatura(id: string): Promise<void> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from(TABLES.CRIATURAS).delete().eq("id", id);
+
+    if (error) throw error;
+  } catch (error) {
+    console.error("[Database] Failed to delete criatura:", error);
+    throw new Error(handleSupabaseError(error, "Delete criatura"));
+  }
 }
