@@ -1,0 +1,173 @@
+From 5ea42f27960d9103aa607a4e450e572bc687bf3b Mon Sep 17 00:00:00 2001
+From: Manus AI <manus@example.com>
+Date: Fri, 17 Apr 2026 12:02:26 -0400
+Subject: [PATCH] feat: Adaptar el proyecto para PostgreSQL (Supabase) y
+ configurar el frontend para despliegue en Vercel/Railway.
+
+---
+ .env.example        |  5 +++++
+ client/src/main.tsx |  2 +-
+ drizzle/schema.ts   | 39 +++++++++++++++++++++------------------
+ server/db.ts        |  7 ++++---
+ 4 files changed, 31 insertions(+), 22 deletions(-)
+ create mode 100644 .env.example
+
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..d6aa3b2
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,5 @@
++DATABASE_URL="postgresql://user:password@host:port/database"
++JWT_SECRET="3Ivi4ZHzq0VfIl8/dReB+Lf5Ceun4HBiSBpTWBknAIA="
++VITE_APP_ID="dunita-web-app-default"
++OAUTH_SERVER_URL="https://your-railway-backend-url.railway.app"
++OWNER_OPEN_ID="default-owner-id"
+diff --git a/client/src/main.tsx b/client/src/main.tsx
+index 8adf6f5..aa6a943 100644
+--- a/client/src/main.tsx
++++ b/client/src/main.tsx
+@@ -40,7 +40,7 @@ queryClient.getMutationCache().subscribe(event => {
+ const trpcClient = trpc.createClient({
+   links: [
+     httpBatchLink({
+-      url: "/api/trpc",
++      url: import.meta.env.VITE_API_URL || "/api/trpc",
+       transformer: superjson,
+       fetch(input, init) {
+         return globalThis.fetch(input, {
+diff --git a/drizzle/schema.ts b/drizzle/schema.ts
+index 632765d..909a95a 100644
+--- a/drizzle/schema.ts
++++ b/drizzle/schema.ts
+@@ -1,22 +1,25 @@
+-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, decimal, json } from "drizzle-orm/mysql-core";
++import { pgTable, text, timestamp, varchar, integer, json, pgEnum } from "drizzle-orm/pg-core";
++
++export const userRoleEnum = pgEnum("user_role", ["user", "admin"]);
++export const itemRarezaEnum = pgEnum("item_rareza", ["legendario", "epico", "raro", "comun"]);
+ 
+ /**
+  * Core user table backing auth flow.
+  * Extend this file with additional tables as your product grows.
+  * Columns use camelCase to match both database fields and generated types.
+  */
+-export const users = mysqlTable("users", {
++export const users = pgTable("users", {
+   /**
+    * Surrogate primary key. Auto-incremented numeric value managed by the database.
+    * Use this for relations between tables.
+    */
+-  id: int("id").autoincrement().primaryKey(),
++  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+   /** Manus OAuth identifier (openId) returned from the OAuth callback. Unique per user. */
+   openId: varchar("openId", { length: 64 }).notNull().unique(),
+   name: text("name"),
+   email: varchar("email", { length: 320 }),
+   loginMethod: varchar("loginMethod", { length: 64 }),
+-  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
++  role: userRoleEnum("role").default("user").notNull(),
+   createdAt: timestamp("createdAt").defaultNow().notNull(),
+   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
+@@ -32,14 +35,14 @@ export type InsertUser = typeof users.$inferInsert;
+ /**
+  * Instalaciones (Buildings/Structures)
+  */
+-export const instalaciones = mysqlTable("instalaciones", {
++export const instalaciones = pgTable("instalaciones", {
+   id: varchar("id", { length: 64 }).primaryKey(),
+   nombre: varchar("nombre", { length: 255 }).notNull(),
+   descripcion: text("descripcion").notNull(),
+   categoria: varchar("categoria", { length: 64 }).notNull(), // ACLIMATACION, EXHIBICION
+   tipo: varchar("tipo", { length: 64 }).notNull(),
+-  rareza: mysqlEnum("rareza", ["legendario", "epico", "raro", "comun"]).notNull(),
+-  coste: int("coste").notNull(),
++  rareza: itemRarezaEnum("rareza").notNull(),
++  coste: integer("coste").notNull(),
+   imageUrl: text("imageUrl").notNull(),
+   codigo: varchar("codigo", { length: 64 }).notNull().unique(),
+   faccion: varchar("faccion", { length: 64 }),
+@@ -62,13 +65,13 @@ export type InsertInstalacion = typeof instalaciones.$inferInsert;
+ /**
+  * Estructuras de Defensa (Defense Structures)
+  */
+-export const estructurasDefensa = mysqlTable("estructuras_defensa", {
++export const estructurasDefensa = pgTable("estructuras_defensa", {
+   id: varchar("id", { length: 64 }).primaryKey(),
+   nombre: varchar("nombre", { length: 255 }).notNull(),
+   descripcion: text("descripcion").notNull(),
+   codigo: varchar("codigo", { length: 64 }).notNull().unique(),
+-  rareza: mysqlEnum("rareza", ["legendario", "epico", "raro", "comun"]).notNull(),
+-  coste: int("coste").notNull(),
++  rareza: itemRarezaEnum("rareza").notNull(),
++  coste: integer("coste").notNull(),
+   imageUrl: text("imageUrl").notNull(),
+   stats: json("stats").$type<{
+     defensa: number;
+@@ -85,15 +88,15 @@ export type InsertEstructuraDefensa = typeof estructurasDefensa.$inferInsert;
+ /**
+  * Objetos (Items: Potions, Units, Equipment)
+  */
+-export const objetos = mysqlTable("objetos", {
++export const objetos = pgTable("objetos", {
+   id: varchar("id", { length: 64 }).primaryKey(),
+   nombre: varchar("nombre", { length: 255 }).notNull(),
+   descripcion: text("descripcion").notNull(),
+   tipo: varchar("tipo", { length: 64 }).notNull(), // POCION, RECLUTA, MERCENARIO
+   categoria: varchar("categoria", { length: 64 }).notNull(),
+-  rareza: mysqlEnum("rareza", ["legendario", "epico", "raro", "comun"]).notNull(),
+-  coste: int("coste").notNull(),
+-  cantidad: int("cantidad").notNull().default(1),
++  rareza: itemRarezaEnum("rareza").notNull(),
++  coste: integer("coste").notNull(),
++  cantidad: integer("cantidad").notNull().default(1),
+   imageUrl: text("imageUrl").notNull(),
+   efectos: json("efectos").$type<string[]>().notNull(),
+   createdAt: timestamp("createdAt").defaultNow().notNull(),
+@@ -106,15 +109,15 @@ export type InsertObjeto = typeof objetos.$inferInsert;
+ /**
+  * Criaturas (Creatures/Beasts)
+  */
+-export const criaturas = mysqlTable("criaturas", {
++export const criaturas = pgTable("criaturas", {
+   id: varchar("id", { length: 64 }).primaryKey(),
+   nombre: varchar("nombre", { length: 255 }).notNull(),
+   nombreComun: varchar("nombreComun", { length: 255 }).notNull(),
+   descripcion: text("descripcion").notNull(),
+   especie: varchar("especie", { length: 255 }).notNull(),
+-  rareza: mysqlEnum("rareza", ["legendario", "epico", "raro", "comun"]).notNull(),
+-  costeCompra: int("costeCompra").notNull(),
+-  costeVenta: int("costeVenta").notNull(),
++  rareza: itemRarezaEnum("rareza").notNull(),
++  costeCompra: integer("costeCompra").notNull(),
++  costeVenta: integer("costeVenta").notNull(),
+   imageUrl: text("imageUrl").notNull(),
+   stats: json("stats").$type<{
+     ataque: number;
+diff --git a/server/db.ts b/server/db.ts
+index f365a24..ef1fb30 100644
+--- a/server/db.ts
++++ b/server/db.ts
+@@ -1,5 +1,5 @@
+ import { eq, like } from "drizzle-orm";
+-import { drizzle } from "drizzle-orm/mysql2";
++import { drizzle } from "drizzle-orm/postgres-js";
+ import { InsertUser, users, instalaciones, estructurasDefensa, objetos, criaturas, InsertInstalacion, InsertEstructuraDefensa, InsertObjeto, InsertCriatura } from "../drizzle/schema";
+ import { ENV } from './_core/env';
+ 
+@@ -68,8 +68,9 @@ export async function upsertUser(user: InsertUser): Promise<void> {
+       updateSet.lastSignedIn = new Date();
+     }
+ 
+-    await db.insert(users).values(values).onDuplicateKeyUpdate({
+-      set: updateSet,
++    await db.insert(users).values(values).onConflictDoUpdate({
++        target: users.openId,
++        set: updateSet,
+     });
+   } catch (error) {
+     console.error("[Database] Failed to upsert user:", error);
+-- 
+2.34.1
+
