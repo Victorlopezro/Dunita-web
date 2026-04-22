@@ -1,4 +1,20 @@
 {
   "installCommand": "npx pnpm@10.15.1 install --no-frozen-lockfile",
-  "buildCommand": "npx pnpm@10.15.1 run build"
+  "buildCommand": "npx pnpm@10.15.1 run build",
+  "outputDirectory": "dist/public",
+  "functions": {
+    "dist/index.js": {
+      "runtime": "nodejs20.x"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/dist/index.js"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
 }
