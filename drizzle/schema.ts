@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, decimal, json } from "drizzle-orm/mysql-core";
+import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, decimal, json, boolean } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -13,10 +13,16 @@ export const users = mysqlTable("users", {
   id: int("id").autoincrement().primaryKey(),
   /** Manus OAuth identifier (openId) returned from the OAuth callback. Unique per user. */
   openId: varchar("openId", { length: 64 }).notNull().unique(),
+  /** Google OAuth ID for Google Sign-In */
+  googleId: varchar("googleId", { length: 255 }).unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+  /** Two-Factor Authentication enabled status */
+  twoFactorEnabled: boolean("twoFactorEnabled").default(false).notNull(),
+  /** Two-Factor Authentication secret */
+  twoFactorSecret: varchar("twoFactorSecret", { length: 255 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
@@ -24,6 +30,42 @@ export const users = mysqlTable("users", {
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
+
+// ============================================================
+// TWO-FACTOR AUTHENTICATION SCHEMA
+// ============================================================
+
+/**
+ * Two-Factor Authentication codes table
+ */
+export const twoFactorCodes = mysqlTable("two_factor_codes", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  code: varchar("code", { length: 6 }).notNull(),
+  email: varchar("email", { length: 320 }).notNull(),
+  expiresAt: timestamp("expiresAt").notNull(),
+  used: boolean("used").default(false).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type TwoFactorCode = typeof twoFactorCodes.$inferSelect;
+export type InsertTwoFactorCode = typeof twoFactorCodes.$inferInsert;
+
+/**
+ * OAuth sessions table (temporary storage)
+ */
+export const oauthSessions = mysqlTable("oauth_sessions", {
+  id: varchar("id", { length: 64 }).primaryKey(),
+  googleIdToken: text("googleIdToken").notNull(),
+  email: varchar("email", { length: 320 }).notNull(),
+  name: varchar("name", { length: 255 }),
+  googleId: varchar("googleId", { length: 255 }).notNull(),
+  expiresAt: timestamp("expiresAt").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type OAuthSession = typeof oauthSessions.$inferSelect;
+export type InsertOAuthSession = typeof oauthSessions.$inferInsert;
 
 // ============================================================
 // DUNE DOMINION GAME ITEMS SCHEMA

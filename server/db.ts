@@ -629,3 +629,211 @@ export async function deleteCriatura(id: string): Promise<void> {
     throw new Error(handleSupabaseError(error, "Delete criatura"));
   }
 }
+
+// ============================================================
+// TWO-FACTOR AUTHENTICATION
+// ============================================================
+
+/**
+ * Generate and store 2FA code for user
+ */
+export async function generateTwoFactorCode(userId: number, email: string): Promise<string> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    // Generate 6-digit code
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    const { error } = await supabase.from("two_factor_codes").insert([
+      {
+        userId,
+        code,
+        email,
+        expiresAt,
+        used: false,
+      },
+    ]);
+
+    if (error) throw error;
+
+    return code;
+  } catch (error) {
+    console.error("[Database] Failed to generate 2FA code:", error);
+    throw new Error(handleSupabaseError(error, "Generate 2FA code"));
+  }
+}
+
+/**
+ * Verify 2FA code
+ */
+export async function verifyTwoFactorCode(userId: number, code: string): Promise<boolean> {
+  if (!isSupabaseConfigured()) {
+    return false;
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("two_factor_codes")
+      .select("*")
+      .eq("userId", userId)
+      .eq("code", code)
+      .eq("used", false)
+      .gt("expiresAt", new Date())
+      .single();
+
+    if (error || !data) {
+      return false;
+    }
+
+    // Mark code as used
+    await supabase.from("two_factor_codes").update({ used: true }).eq("id", data.id);
+
+    return true;
+  } catch (error) {
+    console.error("[Database] Failed to verify 2FA code:", error);
+    return false;
+  }
+}
+
+/**
+ * Get user by Google ID
+ */
+export async function getUserByGoogleId(googleId: string): Promise<User | undefined> {
+  if (!isSupabaseConfigured()) {
+    console.warn("[Database] Cannot get user: Supabase not configured");
+    return undefined;
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from(TABLES.USERS)
+      .select("*")
+      .eq("googleId", googleId)
+      .single();
+
+    if (error && error.code !== "PGRST116") {
+      throw error;
+    }
+
+    return data as User | undefined;
+  } catch (error) {
+    console.error("[Database] Failed to get user by googleId:", error);
+    return undefined;
+  }
+}
+
+/**
+ * Get user by email
+ */
+export async function getUserByEmail(email: string): Promise<User | undefined> {
+  if (!isSupabaseConfigured()) {
+    console.warn("[Database] Cannot get user: Supabase not configured");
+    return undefined;
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from(TABLES.USERS)
+      .select("*")
+      .eq("email", email)
+      .single();
+
+    if (error && error.code !== "PGRST116") {
+      throw error;
+    }
+
+    return data as User | undefined;
+  } catch (error) {
+    console.error("[Database] Failed to get user by email:", error);
+    return undefined;
+  }
+}
+
+/**
+ * Create OAuth session for temporary storage
+ */
+export async function createOAuthSession(
+  googleIdToken: string,
+  email: string,
+  name: string | undefined,
+  googleId: string
+): Promise<string> {
+  if (!isSupabaseConfigured()) {
+    throw new Error("Supabase not configured");
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const sessionId = Math.random().toString(36).substring(2) + Date.now().toString(36);
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+    const { error } = await supabase.from("oauth_sessions").insert([
+      {
+        id: sessionId,
+        googleIdToken,
+        email,
+        name: name || null,
+        googleId,
+        expiresAt,
+      },
+    ]);
+
+    if (error) throw error;
+
+    return sessionId;
+  } catch (error) {
+    console.error("[Database] Failed to create OAuth session:", error);
+    throw new Error(handleSupabaseError(error, "Create OAuth session"));
+  }
+}
+
+/**
+ * Get OAuth session
+ */
+export async function getOAuthSession(sessionId: string) {
+  if (!isSupabaseConfigured()) {
+    return null;
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("oauth_sessions")
+      .select("*")
+      .eq("id", sessionId)
+      .gt("expiresAt", new Date())
+      .single();
+
+    if (error && error.code !== "PGRST116") {
+      throw error;
+    }
+
+    return data || null;
+  } catch (error) {
+    console.error("[Database] Failed to get OAuth session:", error);
+    return null;
+  }
+}
+
+/**
+ * Delete OAuth session
+ */
+export async function deleteOAuthSession(sessionId: string): Promise<void> {
+  if (!isSupabaseConfigured()) {
+    return;
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    await supabase.from("oauth_sessions").delete().eq("id", sessionId);
+  } catch (error) {
+    console.error("[Database] Failed to delete OAuth session:", error);
+  }
+}

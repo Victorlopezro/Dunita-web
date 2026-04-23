@@ -11,4 +11,11 @@ export const ENV = {
   isProduction: process.env.NODE_ENV === "production",
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  // Google OAuth configuration
+  googleClientId: process.env.GOOGLE_CLIENT_ID ?? "",
+  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
+  googleCallbackUri: process.env.GOOGLE_CALLBACK_URI ?? "",
+  // Email configuration for 2FA
+  emailUser: process.env.EMAIL_USER ?? "",
+  emailPassword: process.env.EMAIL_PASSWORD ?? "",
 };
