@@ -15,9 +15,15 @@ export const users = mysqlTable("users", {
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   /** Google OAuth ID for Google Sign-In */
   googleId: varchar("googleId", { length: 255 }).unique(),
+  /** Username/Nickname for the account */
+  nickname: varchar("nickname", { length: 255 }).unique(),
   name: text("name"),
-  email: varchar("email", { length: 320 }),
-  loginMethod: varchar("loginMethod", { length: 64 }),
+  email: varchar("email", { length: 320 }).unique(),
+  /** Hashed password for email/password signup */
+  passwordHash: text("passwordHash"),
+  /** Date of birth for the user */
+  birthDate: timestamp("birthDate"),
+  loginMethod: varchar("loginMethod", { length: 64 }), // 'google' or 'email'
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
   /** Two-Factor Authentication enabled status */
   twoFactorEnabled: boolean("twoFactorEnabled").default(false).notNull(),

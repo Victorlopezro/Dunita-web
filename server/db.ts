@@ -71,16 +71,14 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       lastSignedIn: timestamp,
     };
 
-    // Set optional text fields
-    if (user.name !== undefined) {
-      userData.name = user.name ?? null;
-    }
-    if (user.email !== undefined) {
-      userData.email = user.email ?? null;
-    }
-    if (user.loginMethod !== undefined) {
-      userData.loginMethod = user.loginMethod ?? null;
-    }
+    // Optional profile fields
+    if (user.name !== undefined) userData.name = user.name ?? null;
+    if (user.email !== undefined) userData.email = user.email ?? null;
+    if (user.loginMethod !== undefined) userData.loginMethod = user.loginMethod ?? null;
+    if ((user as any).nickname !== undefined) userData.nickname = (user as any).nickname ?? null;
+    if ((user as any).passwordHash !== undefined) userData.passwordHash = (user as any).passwordHash ?? null;
+    if ((user as any).birthDate !== undefined) userData.birthDate = (user as any).birthDate ?? null;
+    if ((user as any).googleId !== undefined) userData.googleId = (user as any).googleId ?? null;
 
     // Set role
     if (user.role !== undefined) {
@@ -115,6 +113,34 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   } catch (error) {
     console.error("[Database] Failed to upsert user:", error);
     throw error;
+  }
+}
+
+/**
+ * Get user by nickname
+ */
+export async function getUserByNickname(nickname: string): Promise<User | undefined> {
+  if (!isSupabaseConfigured()) {
+    console.warn("[Database] Cannot get user: Supabase not configured");
+    return undefined;
+  }
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from(TABLES.USERS)
+      .select("*")
+      .eq("nickname", nickname)
+      .single();
+
+    if (error && error.code !== "PGRST116") {
+      throw error;
+    }
+
+    return data as User | undefined;
+  } catch (error) {
+    console.error("[Database] Failed to get user by nickname:", error);
+    return undefined;
   }
 }
 
